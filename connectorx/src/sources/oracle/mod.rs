@@ -12,7 +12,10 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use fehler::{throw, throws};
 use log::debug;
 use r2d2::{Pool, PooledConnection};
-use r2d2_oracle::{oracle::Row, OracleConnectionManager};
+use r2d2_oracle::{
+    oracle::{Row, SqlValue},
+    OracleConnectionManager,
+};
 use url::Url;
 type OracleManager = OracleConnectionManager;
 type OracleConn = PooledConnection<OracleManager>;
@@ -21,6 +24,7 @@ pub use self::errors::OracleSourceError;
 use crate::sql::limit1_query_oracle;
 use r2d2_oracle::oracle::ResultSet;
 use sqlparser::dialect::Dialect;
+use std::{rc::Rc, thread};
 pub use typesystem::OracleTypeSystem;
 use urlencoding::decode;
 
@@ -38,6 +42,21 @@ impl Dialect for OracleDialect {
             || ('A'..='Z').contains(&ch)
             || ('0'..='9').contains(&ch)
             || ch == '_'
+    }
+}
+
+// copy from rust-oracle
+struct RowSharedData {
+    column_names: Vec<String>,
+}
+struct OracleRow {
+    shared: Rc<RowSharedData>,
+    column_values: Vec<SqlValue>,
+}
+
+impl OracleRow {
+    fn get_values(self) -> Vec<SqlValue> {
+        self.column_values
     }
 }
 
@@ -249,7 +268,19 @@ impl<'a> OracleTextSourceParser<'a> {
     fn next_loc(&mut self) -> (usize, usize) {
         if self.current_row >= self.rowbuf.len() {
             if !self.rowbuf.is_empty() {
-                self.rowbuf.drain(..);
+                let b: Vec<Vec<SqlValue>> = self
+                    .rowbuf
+                    .drain(..)
+                    .map(|r| unsafe { std::mem::transmute::<Row, OracleRow>(r) }.get_values())
+                    .collect();
+
+                let bytes = unsafe { std::mem::transmute::<_, *const [u8]>(b) };
+
+                thread::spawn(move || unsafe {
+                    let t =
+                        unsafe { std::mem::transmute::<*const [u8], Vec<Vec<SqlValue>>>(bytes) };
+                    std::mem::drop(t);
+                });
             }
 
             for _ in 0..self.buf_size {
