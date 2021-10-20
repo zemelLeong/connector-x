@@ -5,7 +5,8 @@ build-release:
 
 build-debug:
     cargo build
-
+oracle:
+  cargo run --features src_oracle --features dst_arrow --example oracle
 test +ARGS="":
     cargo test --features all {{ARGS}} -- --nocapture
 

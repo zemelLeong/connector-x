@@ -17,6 +17,7 @@ use r2d2_oracle::{
     OracleConnectionManager,
 };
 use url::Url;
+
 type OracleManager = OracleConnectionManager;
 type OracleConn = PooledConnection<OracleManager>;
 
@@ -51,13 +52,7 @@ struct RowSharedData {
 }
 struct OracleRow {
     shared: Rc<RowSharedData>,
-    column_values: Vec<SqlValue>,
-}
-
-impl OracleRow {
-    fn get_values(self) -> Vec<SqlValue> {
-        self.column_values
-    }
+    pub column_values: Vec<SqlValue>,
 }
 
 pub struct OracleSource {
@@ -271,15 +266,13 @@ impl<'a> OracleTextSourceParser<'a> {
                 let b: Vec<Vec<SqlValue>> = self
                     .rowbuf
                     .drain(..)
-                    .map(|r| unsafe { std::mem::transmute::<Row, OracleRow>(r) }.get_values())
+                    .map(|r| unsafe { std::mem::transmute::<Row, OracleRow>(r) }.column_values)
                     .collect();
 
-                let bytes = unsafe { std::mem::transmute::<_, *const [u8]>(b) };
+                let val: Vec<()> = unsafe { std::mem::transmute(b) };
 
                 thread::spawn(move || unsafe {
-                    let t =
-                        unsafe { std::mem::transmute::<*const [u8], Vec<Vec<SqlValue>>>(bytes) };
-                    std::mem::drop(t);
+                    std::mem::transmute::<_, Vec<Vec<SqlValue>>>(val);
                 });
             }
 
