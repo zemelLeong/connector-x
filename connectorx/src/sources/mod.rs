@@ -76,6 +76,11 @@ pub trait PartitionParser<'a> {
     {
         self.produce()
     }
+
+    /// Final clean ups
+    fn finalize(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 
 /// A type implemented `Produce<T>` means that it can produce a value `T` by consuming part of it's raw data buffer.

@@ -1,6 +1,8 @@
 mod errors;
 mod typesystem;
 
+pub use self::errors::OracleSourceError;
+use crate::sql::limit1_query_oracle;
 use crate::{
     data_order::DataOrder,
     errors::ConnectorXError,
@@ -12,22 +14,23 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use fehler::{throw, throws};
 use log::debug;
 use r2d2::{Pool, PooledConnection};
+use r2d2_oracle::oracle::ResultSet;
 use r2d2_oracle::{
     oracle::{Row, SqlValue},
     OracleConnectionManager,
 };
+use sqlparser::dialect::Dialect;
+use std::{
+    rc::Rc,
+    sync::mpsc::{channel, Sender},
+    thread,
+};
+pub use typesystem::OracleTypeSystem;
 use url::Url;
+use urlencoding::decode;
 
 type OracleManager = OracleConnectionManager;
 type OracleConn = PooledConnection<OracleManager>;
-
-pub use self::errors::OracleSourceError;
-use crate::sql::limit1_query_oracle;
-use r2d2_oracle::oracle::ResultSet;
-use sqlparser::dialect::Dialect;
-use std::{rc::Rc, thread};
-pub use typesystem::OracleTypeSystem;
-use urlencoding::decode;
 
 #[derive(Debug)]
 pub struct OracleDialect {}
@@ -48,10 +51,10 @@ impl Dialect for OracleDialect {
 
 // copy from rust-oracle
 struct RowSharedData {
-    column_names: Vec<String>,
+    _column_names: Vec<String>,
 }
 struct OracleRow {
-    shared: Rc<RowSharedData>,
+    _shared: Rc<RowSharedData>,
     pub column_values: Vec<SqlValue>,
 }
 
@@ -162,6 +165,21 @@ where
 
     #[throws(OracleSourceError)]
     fn partition(self) -> Vec<Self::Partition> {
+        let (tx, rx) = channel::<Option<Vec<()>>>();
+        let mut part_num = self.queries.len();
+        thread::spawn(move || {
+            while part_num > 0 {
+                match rx.recv().unwrap() {
+                    Some(v) => unsafe {
+                        // release SqlValue in a dedicated thread
+                        std::mem::transmute::<_, Vec<Vec<SqlValue>>>(v);
+                    },
+                    None => part_num -= 1, // terminate the thread after receiving # partition of None
+                };
+            }
+            debug!("stop thread for freeing Oracle::SqlValue!");
+        });
+
         let mut ret = vec![];
         for query in self.queries {
             let conn = self.pool.get()?;
@@ -170,6 +188,7 @@ where
                 &query,
                 &self.schema,
                 self.buf_size,
+                tx.clone(),
             ));
         }
         ret
@@ -183,6 +202,7 @@ pub struct OracleSourcePartition {
     nrows: usize,
     ncols: usize,
     buf_size: usize,
+    sender: Sender<Option<Vec<()>>>,
 }
 
 impl OracleSourcePartition {
@@ -191,6 +211,7 @@ impl OracleSourcePartition {
         query: &CXQuery<String>,
         schema: &[OracleTypeSystem],
         buf_size: usize,
+        sender: Sender<Option<Vec<()>>>,
     ) -> Self {
         Self {
             conn,
@@ -199,6 +220,7 @@ impl OracleSourcePartition {
             nrows: 0,
             ncols: schema.len(),
             buf_size,
+            sender,
         }
     }
 }
@@ -226,7 +248,7 @@ impl SourcePartition for OracleSourcePartition {
     fn parser(&mut self) -> Self::Parser<'_> {
         let query = self.query.clone();
         let iter = self.conn.query(query.as_str(), &[])?;
-        OracleTextSourceParser::new(iter, &self.schema, self.buf_size)
+        OracleTextSourceParser::new(iter, &self.schema, self.buf_size, &self.sender)
     }
 
     fn nrows(&self) -> usize {
@@ -245,10 +267,16 @@ pub struct OracleTextSourceParser<'a> {
     ncols: usize,
     current_col: usize,
     current_row: usize,
+    sender: &'a Sender<Option<Vec<()>>>,
 }
 
 impl<'a> OracleTextSourceParser<'a> {
-    pub fn new(iter: ResultSet<'a, Row>, schema: &[OracleTypeSystem], buf_size: usize) -> Self {
+    pub fn new(
+        iter: ResultSet<'a, Row>,
+        schema: &[OracleTypeSystem],
+        buf_size: usize,
+        sender: &'a Sender<Option<Vec<()>>>,
+    ) -> Self {
         Self {
             iter,
             buf_size,
@@ -256,6 +284,7 @@ impl<'a> OracleTextSourceParser<'a> {
             ncols: schema.len(),
             current_row: 0,
             current_col: 0,
+            sender,
         }
     }
 
@@ -270,10 +299,7 @@ impl<'a> OracleTextSourceParser<'a> {
                     .collect();
 
                 let val: Vec<()> = unsafe { std::mem::transmute(b) };
-
-                thread::spawn(move || unsafe {
-                    std::mem::transmute::<_, Vec<Vec<SqlValue>>>(val);
-                });
+                self.sender.send(Some(val)).unwrap();
             }
 
             for _ in 0..self.buf_size {
@@ -300,6 +326,11 @@ impl<'a> OracleTextSourceParser<'a> {
 impl<'a> PartitionParser<'a> for OracleTextSourceParser<'a> {
     type TypeSystem = OracleTypeSystem;
     type Error = OracleSourceError;
+
+    fn finalize(&mut self) -> Result<(), Self::Error> {
+        self.sender.send(None).unwrap();
+        Ok(())
+    }
 }
 
 macro_rules! impl_produce_text {

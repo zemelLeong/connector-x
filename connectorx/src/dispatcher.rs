@@ -4,7 +4,7 @@ use crate::{
     data_order::{coordinate, DataOrder},
     destinations::{Destination, DestinationPartition},
     errors::{ConnectorXError, Result as CXResult},
-    sources::{Source, SourcePartition},
+    sources::{PartitionParser, Source, SourcePartition},
     sql::CXQuery,
     typesystem::{Transport, TypeSystem},
 };
@@ -148,6 +148,7 @@ where
 
                 debug!("Finalize partition {}", i);
                 src.finalize()?;
+                parser.finalize()?;
                 debug!("Partition {} finished", i);
                 Ok(())
             })?;

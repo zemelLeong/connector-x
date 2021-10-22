@@ -17,9 +17,15 @@ bootstrap-python:
 build-python-extention:
     cd connectorx-python && cargo build --release
 
+build-python-extention-debug:
+    cd connectorx-python && cargo build
+
 setup-python: build-python-extention
     cd connectorx-python && poetry run python ../scripts/python-helper.py copy-extension
-    
+
+setup-python-debug: build-python-extention-debug
+    cd connectorx-python && poetry run python ../scripts/python-helper.py copy-extension
+   
 test-python +opts="": setup-python
     cd connectorx-python && poetry run pytest connectorx/tests -v -s {{opts}}
 
@@ -52,6 +58,13 @@ python-tpch name +ARGS="": setup-python
     export PYTHONPATH=$PWD/connectorx-python
     cd connectorx-python && \
     poetry run python ../benchmarks/tpch-{{name}}.py {{ARGS}}
+
+python-tpch-debug name +ARGS="": setup-python-debug
+    #!/bin/bash
+    export PYTHONPATH=$PWD/connectorx-python
+    cd connectorx-python && \
+    poetry run python ../benchmarks/tpch-{{name}}.py {{ARGS}}
+
 
 python-tpch-ext name +ARGS="":
     cd connectorx-python && poetry run python ../benchmarks/tpch-{{name}}.py {{ARGS}}

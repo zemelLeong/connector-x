@@ -72,3 +72,37 @@ fn test_types() {
         rows
     );
 }
+
+#[test]
+fn test_oracle() {
+    let _ = env_logger::builder().is_test(true).try_init();
+    let dburl = env::var("ORACLE_URL").unwrap();
+    let mut source = OracleSource::new(&dburl, 1).unwrap();
+    #[derive(Debug, PartialEq)]
+    struct Row(i64, i64, f64, f64, String, String);
+
+    let count = 10000;
+
+    source.set_queries(&[CXQuery::naked(format!("select l_orderkey, l_partkey, l_quantity, l_extendedprice, l_shipinstruct, l_comment from admin.lineitem where l_orderkey < {}", count))]);
+    source.fetch_metadata().unwrap();
+    let mut partitions = source.partition().unwrap();
+    assert!(partitions.len() == 1);
+    let mut partition = partitions.remove(0);
+    partition.prepare().expect("run query");
+
+    let mut parser = partition.parser().unwrap();
+
+    let mut rows: Vec<Row> = Vec::new();
+    for _i in 0..count {
+        rows.push(Row(
+            parser.produce().unwrap(),
+            parser.produce().unwrap(),
+            parser.produce().unwrap(),
+            parser.produce().unwrap(),
+            parser.produce().unwrap(),
+            parser.produce().unwrap(),
+        ));
+    }
+
+    println!("success!");
+}
