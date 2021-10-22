@@ -165,21 +165,6 @@ where
 
     #[throws(OracleSourceError)]
     fn partition(self) -> Vec<Self::Partition> {
-        let (tx, rx) = channel::<Option<Vec<()>>>();
-        let mut part_num = self.queries.len();
-        thread::spawn(move || {
-            while part_num > 0 {
-                match rx.recv().unwrap() {
-                    Some(v) => unsafe {
-                        // release SqlValue in a dedicated thread
-                        std::mem::transmute::<_, Vec<Vec<SqlValue>>>(v);
-                    },
-                    None => part_num -= 1, // terminate the thread after receiving # partition of None
-                };
-            }
-            debug!("stop thread for freeing Oracle::SqlValue!");
-        });
-
         let mut ret = vec![];
         for query in self.queries {
             let conn = self.pool.get()?;
@@ -188,7 +173,6 @@ where
                 &query,
                 &self.schema,
                 self.buf_size,
-                tx.clone(),
             ));
         }
         ret
@@ -202,7 +186,6 @@ pub struct OracleSourcePartition {
     nrows: usize,
     ncols: usize,
     buf_size: usize,
-    sender: Sender<Option<Vec<()>>>,
 }
 
 impl OracleSourcePartition {
@@ -211,7 +194,6 @@ impl OracleSourcePartition {
         query: &CXQuery<String>,
         schema: &[OracleTypeSystem],
         buf_size: usize,
-        sender: Sender<Option<Vec<()>>>,
     ) -> Self {
         Self {
             conn,
@@ -220,7 +202,6 @@ impl OracleSourcePartition {
             nrows: 0,
             ncols: schema.len(),
             buf_size,
-            sender,
         }
     }
 }
@@ -248,7 +229,7 @@ impl SourcePartition for OracleSourcePartition {
     fn parser(&mut self) -> Self::Parser<'_> {
         let query = self.query.clone();
         let iter = self.conn.query(query.as_str(), &[])?;
-        OracleTextSourceParser::new(iter, &self.schema, self.buf_size, &self.sender)
+        OracleTextSourceParser::new(iter, &self.schema, self.buf_size)
     }
 
     fn nrows(&self) -> usize {
@@ -267,16 +248,25 @@ pub struct OracleTextSourceParser<'a> {
     ncols: usize,
     current_col: usize,
     current_row: usize,
-    sender: &'a Sender<Option<Vec<()>>>,
+    sender: Sender<Option<Vec<()>>>,
 }
 
 impl<'a> OracleTextSourceParser<'a> {
-    pub fn new(
-        iter: ResultSet<'a, Row>,
-        schema: &[OracleTypeSystem],
-        buf_size: usize,
-        sender: &'a Sender<Option<Vec<()>>>,
-    ) -> Self {
+    pub fn new(iter: ResultSet<'a, Row>, schema: &[OracleTypeSystem], buf_size: usize) -> Self {
+        let (tx, rx) = channel::<Option<Vec<()>>>();
+        thread::spawn(move || {
+            loop {
+                match rx.recv().unwrap() {
+                    Some(v) => unsafe {
+                        // release SqlValue in a dedicated thread
+                        std::mem::transmute::<_, Vec<Vec<SqlValue>>>(v);
+                    },
+                    None => break, // terminate the thread after receiving None
+                };
+            }
+            debug!("stop thread for freeing Oracle::SqlValue!");
+        });
+
         Self {
             iter,
             buf_size,
@@ -284,7 +274,7 @@ impl<'a> OracleTextSourceParser<'a> {
             ncols: schema.len(),
             current_row: 0,
             current_col: 0,
-            sender,
+            sender: tx,
         }
     }
 
