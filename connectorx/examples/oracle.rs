@@ -10,7 +10,7 @@ fn main() -> Result<(), Error> {
     let dispatcher = Dispatcher::<_, _, OracleArrowTransport>::new(
         source,
         &mut dst,
-        &["select * from lineitem"],
+        &["select * from lineitem where l_orderkey < 100000"],
     );
 
     dispatcher.run()?;

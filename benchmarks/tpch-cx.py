@@ -46,7 +46,7 @@ if __name__ == "__main__":
         if part_num > 1:
             df = cx.read_sql(
                 conn,
-                f"""SELECT * FROM {table} where l_orderkey < 10000""",
+                f"""SELECT * FROM {table}""",
                 partition_on="L_ORDERKEY",
                 partition_num=int(args["<num>"]),
                 protocol=args["--protocol"],
@@ -55,7 +55,7 @@ if __name__ == "__main__":
         else:
             df = cx.read_sql(
                 conn,
-                f"""SELECT * FROM {table} where l_orderkey < 10000""",
+                f"""SELECT * FROM {table}""",
                 protocol=args["--protocol"],
                 return_type=args["--ret"],
             )
